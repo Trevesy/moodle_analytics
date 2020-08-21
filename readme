@@ -1,1 +1,9 @@
-readme here
+This project takes the output from a logs request and the download from student grades and converts them into two visualisations using R and RStudio.
+
+Visualisation 1:
+Shows a cumulative plot of first hits on a Moodle element, i.e. a student accesses 'introduction pdf' on a certain day.  If this is the first time they have accessed this element, they count towards the hits on that day.  If they access the element again, their use is not included in that day's total.  All the elements of the course are shown.
+
+Visualisation 2:
+This splits the students into grade bands (user defined) and shows what percentage of students in that grade band have accessed all the elements of a course as a heat map.  
+
+The plots are illustrated in the attached .pptx file
