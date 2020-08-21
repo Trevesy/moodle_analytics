@@ -1,0 +1,384 @@
+---
+title: "First hits by time v3"
+author: "Richard Treves"
+date: "6/4/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Introduction
+The Moodle elements plotter will plot the number of 'first look' accesses by students to an element of the course versus time.  First look means only the date each student first accesses an element is recorded, subsequent hits on the same element by the same student aren't counted. The plot is cumulative with time.
+
+This document is written in 'RMarkdown':  Comments are formatted like this and the code appears in 'chunks' as you can see below.  To execute a chunk of code, click the "play" triangle in the top right of a chunk.
+
+## 1] Get the logs from QMplus:
+1a] Goto Settings (column) in your QMplus course then access > Reports > Logs
+*If you do not have the right permissions you cannot access this, you will have to contact your administrator to do the steps up to [5] for you.*
+
+1b] Set the 'All Actions' pull down to be 'View'
+
+1c] All the other pull downs (except the course one at the top left) should be set to 'All...'
+
+1d] Click 'Get these logs'
+
+1e] Scroll down and find the 'Download table data as'.  
+
+1f] Select 'Microsoft Excel' and click Download.
+
+1g] Rename the file as "logs.xlsx' (NOTE no capitals) and save it in the same folder as the 'Moodle Elements Plotter.rmd' file. 
+
+1h] now run the chunk below to process the data 
+
+```{r processing log file, include=FALSE}
+if("readxl" %in% rownames(installed.packages()) == FALSE) {install.packages("readxl")} 
+if("tibble" %in% rownames(installed.packages()) == FALSE) {install.packages("tibble")} 
+if("plot_ly" %in% rownames(installed.packages()) == FALSE) {install.packages("plot_ly")} 
+if("stringr" %in% rownames(installed.packages()) == FALSE) {install.packages("stringr")} 
+if("digest" %in% rownames(installed.packages()) == FALSE) {install.packages("digest")} 
+if("knitr" %in% rownames(installed.packages()) == FALSE) {install.packages("knitr")} 
+if("dplyr" %in% rownames(installed.packages()) == FALSE) {install.packages("dplyr")} 
+if("openxlsx" %in% rownames(installed.packages()) == FALSE) {install.packages("openxlsx")} 
+if("reshape" %in% rownames(installed.packages()) == FALSE) {install.packages("reshape")} 
+if("data.table" %in% rownames(installed.packages()) == FALSE) {install.packages("data.table")} 
+
+library(readxl)
+library(tibble)
+library(plotly)
+library(stringr)
+library(digest)
+library(knitr)
+library(dplyr)
+library(openxlsx)
+library(reshape)
+library(data.table)
+
+
+#Assign the excel file to a dataframe (tibble)
+logs_df <- read_excel('logs.xlsx')
+
+#convert from tibble to df as tibble always returns a tibble as output
+logs_df <- as.data.frame(logs_df)
+
+#get rid of the IP address column
+logs_df$`IP address` <- NULL
+
+#Create an hash version of the user full name and delete the ID.  Has to be done in for loop.
+for(i in 1:nrow(logs_df) ) {            #count through all rows
+  logs_df[i,"ID_hash"] <- digest(logs_df[i,"User full name"])
+}
+logs_df$`User full name` <- NULL
+
+#extract date from time column and assign it as a string to date column
+logs_df$Date <- substring(logs_df$Time, 1, regexpr(",", logs_df$Time)-1)
+
+#convert string to date for date column
+logs_df$Date <- as.Date(logs_df$Date, "%d/%m/%Y")  
+
+#replace blanks in column names with underscore
+names(logs_df) <- str_replace_all(names(logs_df)," ","_")
+
+#shorten length of Event_context to 50 characters so it graphs properly later
+logs_df$Event_context <- substring(logs_df$Event_context, 1, 50)
+
+#strip out all of the spaces in Event Context column so it can be used to reference col names later
+logs_df$Event_context <- str_replace_all(logs_df$Event_context," ","_")
+
+#Order by Event then student then date and save to logs_sorted
+logs_sorted <- logs_df[with(logs_df, order(Event_context, ID_hash, Date)), ]
+
+all_dates <- unique(logs_sorted["Date"])  #find all dates in database
+all_dates <- all_dates[order(all_dates$Date),]   #order dates
+
+all_events <- unique(logs_sorted["Event_context"])     #find all media elements
+all_events <- all_events[order(all_events$Event_context),]    #order them alphabetically
+
+#set up results data.frame from two vectors created above (media elements vs date)
+date_event_count <- data.frame(matrix(ncol = length(all_events), nrow = length(all_dates)))
+date_event_count [is.na(date_event_count)] = 0  #set all NA values to be zero
+colnames(date_event_count) = all_events         #insert column names
+rownames(date_event_count) = all_dates          #insert row names
+date_event_count$Date <- all_dates              #add date column as well as row headers
+
+ID_var <- "start_ID"            #set up a string for these variable outside the loop
+event_var <- "start_event"
+
+for(i in 1:nrow(logs_sorted) ) {            #count through all rows
+   if(logs_sorted[i,'ID_hash'] != ID_var){        #check to see if the ID has changed  OR TEXT  | logs_sorted[i,'Event_context'] != event_var 
+    event_var <- toString(logs_sorted[i,'Event_context'])     #set event var
+    ID_var <- toString(logs_sorted[i,'ID_hash'])       #set ID var in order to check if it has changed
+    date_row <- which(date_event_count$Date == logs_sorted[i,'Date'])     #set date var and set as string otherwise it won't read from the dataframe correctly
+    date_event_count[date_row,event_var]  <- date_event_count[date_row,event_var]+1  #add 1 to relevent cell in date_event_count
+  }
+}
+    
+date_event_count$Date <- NULL      #remove date column before processing to cumulative values
+cum_date_event_count <- cumsum(date_event_count) #create cumulative values
+cum_date_event_count$Date <- all_dates  #add date column back again
+
+#initialise graph
+fig <- plot_ly(cum_date_event_count, 
+  x = cum_date_event_count$Date,
+  y = cum_date_event_count[,1], 
+  type = 'scatter', 
+  name = colnames(cum_date_event_count[1]), 
+  mode = 'lines')
+
+#loop around all the columns adding a trace from each to fig.  Starts at 2 because of initialisation graph above
+for(i in 2:ncol(cum_date_event_count)){
+    fig <- fig %>% add_trace(
+      x = cum_date_event_count$Date,
+      y = cum_date_event_count[,i],
+      type = 'scatter', 
+      name = colnames(cum_date_event_count[i]), 
+      mode = 'lines')
+}
+
+#Add title and axes labels
+fig <- fig %>% layout(title = 'Cumulative Number of Students First Access',
+                      xaxis = list(title = 'Time'),
+                      yaxis = list(title = 'Cumulative Number of Students'))
+
+```
+
+## 2] Plotting the Cumulative graph
+The graph will need some manipulating when produced, render by executing the chunk below and then use the tools as listed
+
+2a] In the top right corner of the plot a square icon called 'show in new window' will expand the plot into its own window, click this to expand the graph size on screen.
+
+2b]  If the plots aren't showing, roll the mouse up above the list of element names until a tool bar appears.  Click the cross with four arrow heads to pan around the graph to find the traces.
+
+2c]  To choose a single trace rather than all of them, double click the name in the list.  This will toggle all the other traces off.  Its temperamental, keep trying it!
+
+2d]  To choose other traces, simply click their element names in the list.
+
+2e]  You can zoom in and out and pan to get the right area of graph on screen - both these are tools on the tool bar.
+
+2f]  Turn on the spike lines tool to show exact dates when rolling your mouse around the screen.
+
+
+```{r Plot the graph, echo=FALSE}
+
+fig
+```
+
+## Plotting the Heat Map of grade vs percentage of students who have completed.
+
+## 3] Get the grade spreadsheet from QMplus:
+
+3a] Goto Settings (column) in your QMplus course then access > Gradebook 
+
+3b] In the new settings column that appears selecte Export > Excel spreadsheet 
+
+3c] Click the 'Download' button at the bottom of the screen you are taken to
+
+3d] Save the file to the same folder as you have the .rmd file saved in
+
+3e] rename it to be 'grades.xlsx' (all lower case!).  
+
+3f] The code chunk below saves 'qmplus_items.xlsx' file to your folder that we need in step 4.  Note that if you have already edited this file, this chunk will overwrite that file!  DO NOT run this code if you have sucessfully edited 'qmplus_items.xlsx' already
+
+```{r Write an Excel file to get elements by week data, echo=FALSE}
+#Create .csv file with events and empty 'week' column for users to enter when elements happened in the module
+#needs to be here as user may loop back to recalculate using different bin sizes.
+events_out <- as.data.frame(all_events)
+events_out$week <- 0
+write.xlsx(events_out, file ="qmplus_items.xlsx", asTable = FALSE)
+```
+
+## 4] OPTIONAL: Fill in the 'qmplus_items.xlsx' spreadsheet 
+
+In the heatmap it helps to order the columns by week so that you can see student behaviour changing as the module progresses.  To do this you need to complete steps [4a] and [4b] below.  If you don't, R will simply order the columns (elements of the module) alphabetically.
+
+4a] Find the 'qmplus_items.xlsx' file and edit it so that under the 'week' column you enter the week each item appears (or starts or ends, as you think works best) in your QM+ module.  
+
+4b] Save it back to where it is.  R will automatically read it in below.
+
+
+## 5] Set Bin Sizes
+5a] First time through, best to skip 5b and 5c
+
+5b] To change the bin sizes in the heat map edit the line 
+
+'bin_values <- c(0,10,40,60,70,100)'
+
+in the code below.  
+
+5c] Examples:
+To split the results into 5 x 20% bins you would edit it to be
+'bin_values <- c(0,20,40,60,80,100)'
+
+To have normal fail, 3rd, 2.2, 2.1 and 1st bins you would have
+'bin_values <- c(0,40,50,60,70,100)'
+
+lowest number of bins is 2 and you MUST include 0 at the start and 100 at the end.  Bin sizes don't have to be in tens.
+
+```{r Process data to make heat map, echo=FALSE}
+
+bin_values <- c(0,10,40,60,65,70,90,100)  #the bin edges including 0 and 100.  Put here for UX purposes
+
+all_studs <- unique(logs_sorted["ID_hash"])  #find all IDs in database - creates df!
+all_studs <- all_studs[order(all_studs$ID_hash),]   #order stud IDs - creates vector!
+
+#set up results data.frame from two vectors created above (students vs element)
+stud_hits <- data.frame(matrix(ncol = length(all_events), nrow = length(all_studs)))
+stud_hits[is.na(stud_hits)] = 0  #set all NA values to be zero
+colnames(stud_hits) = all_events         #insert column names
+rownames(stud_hits) = all_studs          #insert row names
+stud_hits$ID_hash <- all_studs             #add date column as well as row headers
+
+
+#populate the dataframe with 100 if the student has accessed the element, a zero if not.
+ID_var <- "start_ID"            #set up a string for these variable outside the loop
+for(i in 1:nrow(logs_sorted) ) {            #count through all rows
+  if(logs_sorted[i,'ID_hash'] != ID_var){        #check to see if the ID has changed   
+    event_var <- toString(logs_sorted[i,'Event_context'])     #set event var
+    ID_var <- toString(logs_sorted[i,'ID_hash'])            #set ID var 
+    stud_hits[ID_var,event_var]  <- 100  #set cell value to 1 
+  }
+}
+
+
+#  BRING IN GRADES AND COMBINE
+#*****************************************************************
+
+#Assign the excel file to a dataframe (tibble)
+grades_df <- read_excel('grades.xlsx')
+
+#convert from tibble to df as tibble always returns a tibble as output
+grades_df <- as.data.frame(grades_df)
+
+#replace blanks in column names with underscore
+names(grades_df) <- str_replace_all(names(grades_df)," ","_")
+
+#create student full name so tables can be linked to logs
+grades_df$full_name <- paste(grades_df$First_name,grades_df$Surname, sep=" ")
+
+#Create a hash version of full name 
+for(i in 1:nrow(grades_df) ) {            #count through all rows
+  grades_df[i,"ID_hash"] <- digest(grades_df[i,'full_name'])
+}
+
+#remove all identifiers
+grades_df$First_name <- NULL
+grades_df$Surname <- NULL
+grades_df$full_name <- NULL
+
+#convert all instances of '-' in grades column with 0
+grades_df$`Course_total_(Real)` <- str_replace_all(grades_df$`Course_total_(Real)`,"-","0")
+
+#convert grades to integers
+grades_df$`Course_total_(Real)` <- as.integer(grades_df$`Course_total_(Real)`)
+
+
+#link the grades column from grades dataframe with the stud_hits dataframe 
+for(i in 1:nrow(grades_df) ) {            #count through all rows in grades_df
+  stud_row <- which(stud_hits$ID_hash == grades_df[i,'ID_hash'])      #find the row in stud_hits with the same ID_hash 
+  stud_hits[stud_row,'grade'] <- grades_df[i,'Course_total_(Real)']   #copy the grade across to stud_hits, grade column
+}
+
+#get rid of rows with no match e.g. non-student users with hits recorded in module
+stud_hits <- stud_hits[complete.cases(stud_hits), ]
+
+#get rid of ID_hash column
+stud_hits$ID_hash <- NULL
+
+#convert all stud_hits columns to numeric so line after will work
+stud_hits <- data.frame(lapply(stud_hits,as.numeric))
+
+
+
+
+#****************  PROCESS TO GRADES TO GROUPS AND THEN GROUPS TO MEANS
+#set variables needed for processing to means
+#bin_values used to be here but needed to be moved up to make sense for users.
+num_cols <- ncol(stud_hits) - 2   #needed to set as a variable as it wouldn't work in the for loop below for some reason
+bin_values_num <- length(bin_values)-1  #same as above
+
+
+for(i in 1:bin_values_num) {    #loops around the intervals defining the bins
+  bin_label <- paste(bin_values[i],"_to_",bin_values[i+1],sep = "") #produce bin label for this loop
+  stud_hits$grade_bin[stud_hits$grade >= bin_values[i] &   #if grade is in range, apply bin_label
+                        stud_hits$grade < bin_values[i+1]] = bin_label
+  stud_hits_means <-  stud_hits %>%                     #output vector from process to produce means
+      filter(stud_hits$grade_bin == bin_label) %>%      #use only student rows within grade range
+      select(1:num_cols) %>%                            #don't use last two columns
+      apply(2,mean)                                     #output a mean for each column as a vector
+  stud_hits <- rbind(stud_hits,stud_hits_means)         #add the means vector as an extra row
+  num_in_bin <- length(which(stud_hits$grade_bin==bin_label))
+  rownames(stud_hits)[nrow(stud_hits)] <- paste(bin_label,' (n=',num_in_bin,')',sep="")     #set row label
+}
+
+
+#read edited xl sheet back in and add to stud_hits as new row
+events_by_week <- read_excel('qmplus_items.xlsx', col_names = TRUE, col_types = NULL)
+events_by_week$all_events <- NULL                                       #take out all_events column
+events_by_week <- transpose(events_by_week)                             #transpose df so it can be bound to stud_hits_avg below
+colnames(events_by_week) = all_events                                   #it was missing column names
+events_by_week$grade <- NA                                              #set two columns at end of events by week so columns match
+events_by_week$grade_bin <- NA
+colnames(stud_hits) <- colnames(events_by_week)                         #there was a problem with the col names not matching
+stud_hits <- rbind(stud_hits,events_by_week)
+
+
+
+# ******************** HEAT MAP
+
+row_num <- nrow(stud_hits) - bin_values_num       #number of rows to start taking the data out from
+stud_hits_avg <- stud_hits[row_num:nrow(stud_hits),]  #select the rows with means in and write to new dataframe
+stud_hits_avg$grade <- NULL                           #take out these two columns otherwise the 'week' row becomes a character and won't sort correctly
+stud_hits_avg$grade_bin <- NULL
+
+#order on the 'week' row at the bottom of the dataframe
+stud_hits_avg <- stud_hits_avg[,order(stud_hits_avg[nrow(stud_hits_avg),])]
+
+#put the week number in the column label
+week_n_events <- paste(stud_hits_avg[nrow(stud_hits_avg),],"] ",colnames(stud_hits_avg), sep="" )   #create vector with new labels
+num_cols <- length(week_n_events) - 2                             #no of cols to subset, last variables not needed
+colnames(stud_hits_avg) <- week_n_events[1:num_cols]              #write new col names
+
+row_num <- nrow(stud_hits_avg) - 1                    #set row_num to be one less than number of rows
+stud_hits_avg <- stud_hits_avg[1:row_num,]            #subset the dataframe which removes the week row
+  
+stud_hits_mat <- as.matrix(stud_hits_avg)             #dataframe to matrix so heatmap will work
+
+fig3 <- plot_ly(x=colnames(stud_hits_mat), 
+                y=rownames(stud_hits_mat), 
+                z = stud_hits_mat, 
+                type = "heatmap") %>%  
+                    layout(margin = list(l=120,b=300,t=100),
+                           title = "Percentage of student who have accessed an element vs grade",
+                           xaxis = list(title = "Week and Element of module"),
+                           yaxis = list(title = "Overall Module Grade and Number in Range")
+                          )
+
+```
+
+## 6] Render the heat map:
+
+##Notes on the heatmap:
+6a]  The heat map shows the percentage of students (colour of square) who have completed each element (x axis) grouped by overall grade (y axis)
+
+6b] The elements are ordered by the week they happened (the figure leading labels on the x axis)
+
+6c] The number of students in each grouping are shown on the y axis (n= ...)
+
+6d] Rolling the mouse over the heat map shows the data in a list box
+
+6e] As for the earlier graph, use the 'Show in new window' square (top right) to make the graphic easier to read
+
+```{r Render heat map, echo=FALSE}
+
+
+fig3
+```
+
+## 7] Iterating bin sizes:
+
+7a] The heat map will become noisy and unrepresentative if the number of students (n) in each bin is too small.  A rule of thumb is that there should probably be at least 10 students in each bin if possible.  
+
+7b] To change the bin sizes go back to step [5b] above, edit as instructed and then run the two blocks of code below that step to re-render the heat map.
+
+
+## 8] Iterating for another module
+To do this, simply go back to [1] and repeat the steps for your new module.
